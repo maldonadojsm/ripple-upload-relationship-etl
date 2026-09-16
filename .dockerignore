@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.env.example
+README.md
+Makefile
+scripts
+debezium
+db
+docker-compose.yml
+*.md
+*.log
+.idea
+.vscode

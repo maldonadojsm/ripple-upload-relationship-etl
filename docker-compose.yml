@@ -1,0 +1,225 @@
+name: ripple-upload-relationship-etl
+
+services:
+  redpanda:
+    image: docker.io/redpandadata/redpanda:v24.3.18
+    container_name: relationship-etl-redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr
+      - internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr
+      - internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --default-log-level
+      - info
+      - --overprovisioned
+    ports:
+      - "19092:19092"
+      - "19644:9644"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16.10-alpine
+    container_name: relationship-etl-postgres
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ripple}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ripple}
+      POSTGRES_DB: ${POSTGRES_DB:-ripple}
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  topic-init:
+    image: docker.io/redpandadata/redpanda:v24.3.18
+    container_name: relationship-etl-topic-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      RELATIONSHIP_TOPIC: ${RELATIONSHIP_TOPIC:-ripple.relationship.public.relationships}
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        rpk -X brokers=redpanda:9092 topic create "${RELATIONSHIP_TOPIC}" \
+          --replicas 1 \
+          --partitions 1 \
+          || true
+        rpk -X brokers=redpanda:9092 topic list
+
+  debezium-data-init:
+    image: busybox:1.37
+    container_name: relationship-etl-debezium-data-init
+    volumes:
+      - debezium-data:/debezium/data
+    command: ["sh", "-c", "mkdir -p /debezium/data && chmod 777 /debezium/data"]
+    restart: "no"
+
+  debezium-server:
+    image: quay.io/debezium/server:3.6.2.Final
+    container_name: relationship-etl-debezium
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      topic-init:
+        condition: service_completed_successfully
+      debezium-data-init:
+        condition: service_completed_successfully
+    environment:
+      REDPANDA_BROKERS: ${KAFKA_BROKERS:-redpanda:9092}
+      POSTGRES_DB: ${POSTGRES_DB:-ripple}
+      DEBEZIUM_USER: ${DEBEZIUM_USER:-debezium}
+      DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD:-debezium}
+      DEBEZIUM_TOPIC_PREFIX: ${DEBEZIUM_TOPIC_PREFIX:-ripple.relationship}
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./debezium/application.properties:/debezium/config/application.properties:ro
+      - debezium-data:/debezium/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e \"GET /q/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && grep -q UP <&3'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+    restart: unless-stopped
+
+  memgraph:
+    image: memgraph/memgraph:2.18.1
+    container_name: relationship-etl-memgraph
+    ports:
+      - "17687:7687"
+      - "17444:7444"
+    volumes:
+      - memgraph-data:/var/lib/memgraph
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --host 127.0.0.1 --port 7687 || exit 1"]
+      interval: 5s
+      timeout: 8s
+      retries: 40
+      start_period: 15s
+    restart: unless-stopped
+
+  memgraph-lab:
+    image: memgraph/lab:2.19.1
+    container_name: relationship-etl-memgraph-lab
+    environment:
+      QUICK_CONNECT_MG_HOST: memgraph
+      QUICK_CONNECT_MG_PORT: 7687
+    ports:
+      - "13001:3000"
+    depends_on:
+      memgraph:
+        condition: service_healthy
+    restart: unless-stopped
+
+  memgraph-loader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ripple-upload-relationship-etl:local
+    container_name: relationship-etl-memgraph-loader
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      memgraph:
+        condition: service_healthy
+      topic-init:
+        condition: service_completed_successfully
+      debezium-server:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:9092}
+      RELATIONSHIP_TOPIC: ${RELATIONSHIP_TOPIC:-ripple.relationship.public.relationships}
+      CONSUMER_GROUP: ${CONSUMER_GROUP:-memgraph-loader}
+      MEMGRAPH_URI: ${MEMGRAPH_URI:-bolt://memgraph:7687}
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "19101:4195"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4195/ping')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  memgraph-rebuild:
+    image: ripple-upload-relationship-etl:local
+    container_name: relationship-etl-memgraph-rebuild
+    profiles: ["tools"]
+    command: ["run", "/rebuild.yaml"]
+    environment:
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgres://ripple:ripple@postgres:5432/ripple?sslmode=disable}
+      MEMGRAPH_URI: ${MEMGRAPH_URI:-bolt://memgraph:7687}
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      memgraph:
+        condition: service_healthy
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.8.5
+    container_name: relationship-etl-redpanda-console
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "18088:8080"
+    restart: unless-stopped
+
+volumes:
+  redpanda-data:
+  postgres-data:
+  debezium-data:
+  memgraph-data:

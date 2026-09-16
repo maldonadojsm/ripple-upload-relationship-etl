@@ -1,0 +1,7 @@
+.env
+.idea/
+.vscode/
+*.log
+*.swp
+.DS_Store
+agent-tools/

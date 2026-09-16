@@ -1,0 +1,45 @@
+tests:
+  - name: create event extracts after state
+    target_processors: '/pipeline/processors/1'
+    input_batch:
+      - json_content:
+          op: c
+          after:
+            relationship_id: "f726a747-d251-53dd-a174-b0110021e2c6"
+            relationship_type: DETECTED_IN
+            source_entity_id: "HGNC:1100"
+            source_entity_type: gene
+            source_entity_name: BRCA1
+            target_entity_id: "analysis:123"
+            target_entity_type: analysis
+            target_entity_name: "analysis 123"
+            knowledge_source: OpenTargets
+            knowledge_entity_id: ENSG00000012048
+            knowledge_version: "26.08"
+            properties:
+              confidence: 1.0
+          before: null
+    output_batches:
+      - - json_contains:
+            cdc_op: c
+            target_label: Analysis
+            row:
+              source_entity_id: "HGNC:1100"
+              target_entity_id: "analysis:123"
+
+  - name: wrapped payload delete uses before
+    target_processors: '/pipeline/processors/1'
+    input_batch:
+      - json_content:
+          payload:
+            op: d
+            after: null
+            before:
+              relationship_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+              target_entity_type: analysis
+    output_batches:
+      - - json_contains:
+            cdc_op: d
+            target_label: Analysis
+            row:
+              relationship_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
