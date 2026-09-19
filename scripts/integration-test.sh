@@ -32,6 +32,12 @@ docker compose version >/dev/null || fail "docker compose is required"
 
 compose() { docker compose "$@"; }
 
+cleanup() {
+  log "stopping compose stack"
+  compose down || true
+}
+trap cleanup EXIT
+
 psql_q() {
   compose exec -T postgres psql -U ripple -d ripple -v ON_ERROR_STOP=1 -tA -c "$1"
 }
@@ -225,4 +231,3 @@ wait_until "rebuild MERGE" check_seed
 ok "rebuild restored knowledge_version=26.08 from Postgres"
 
 log "PASS (${PASS} checks)"
-log "compose stack is still running; stop with: make down"
