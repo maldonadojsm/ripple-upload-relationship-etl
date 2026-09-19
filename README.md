@@ -45,7 +45,7 @@ make unit                 # Bloblang mapping tests (connect_benthos_test.yaml)
 make integration-test     # docker compose up, then CDC → Memgraph checks
 ```
 
-`make integration-test` starts the compose stack and runs `scripts/integration-test.sh`. Coverage: seed MERGE, duplicate UPSERT, knowledge-version update, relationship delete (nodes left in place), Connect health, rebuild from Postgres. The stack stays up afterward (`make down` to stop it).
+`make integration-test` starts the compose stack and runs `scripts/integration-test.sh`. Coverage: seed MERGE, duplicate UPSERT, knowledge-version update, relationship delete (nodes left in place), Connect health, rebuild from Postgres. Compose is stopped when the script exits (success or failure).
 
 ## Make targets
 
